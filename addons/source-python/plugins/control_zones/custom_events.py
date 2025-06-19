@@ -17,7 +17,8 @@ from .info import info
 # >> ALL DECLARATION
 # =============================================================================
 __all__ = (
-    "My_Event",
+    "Control_Zone_Captured",
+    "Control_Zone_Lost",
 )
 
 
@@ -25,16 +26,23 @@ __all__ = (
 # >> CLASSES
 # =============================================================================
 # ruff: noqa: N801
-class My_Event(CustomEvent):
-    """Called when a player levels up."""
+class Control_Zone_Lost(CustomEvent):
+    """Called when a team loses control of a control zone."""
 
-    userid = ShortVariable("The userid of player")
-    name = StringVariable("The name of the player")
+    team = ShortVariable("The index of the team who lost control.")
+    zone_name = StringVariable("The name of the control zone.")
+
+
+class Control_Zone_Captured(CustomEvent):
+    """Called when a team gains control of a control zone."""
+
+    team = ShortVariable("The index of the team who gained control.")
+    zone_name = StringVariable("The name of the control zone.")
 
 
 # =============================================================================
 # >> RESOURCE FILE
 # =============================================================================
-resource_file = ResourceFile(info.name, My_Event)
+resource_file = ResourceFile(info.name, Control_Zone_Captured, Control_Zone_Lost)
 resource_file.write()
 resource_file.load_events()

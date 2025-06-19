@@ -16,10 +16,12 @@ from .info import info
 # =============================================================================
 __all__ = (
     "CONFIG_STRINGS",
+    "MESSAGE_STRINGS",
 )
 
 
 # =============================================================================
 # >> GLOBAL VARIABLES
 # =============================================================================
-CONFIG_STRINGS = LangStrings(info.name)
+CONFIG_STRINGS = LangStrings(f"{info.name}/config_strings")
+MESSAGE_STRINGS = LangStrings(f"{info.name}/strings")

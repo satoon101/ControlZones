@@ -2,137 +2,259 @@
 
 """."""
 
-# ==============================================================================
+# =============================================================================
 # >> IMPORTS
-# ==============================================================================
+# =============================================================================
+# Python
 from collections import defaultdict
+from enum import IntEnum
 
-from colors import BLUE, Color, RED, WHITE, BLACK
+# Source.Python
+from colors import BLUE, RED, WHITE
+from cvars.tags import sv_tags
 from effects import box
 from engines.precache import Model
+from engines.server import global_vars
+from entities.entity import Entity
+from events import Event
 from filters.players import PlayerIter
-from listeners.tick import Repeat
+from listeners import OnLevelInit
+from listeners.tick import Delay, Repeat
 from mathlib import Vector
+from messages import HudMsg
+
+# Plugin
+from .config import map_coordinates, seconds_to_control
+from .custom_events import Control_Zone_Captured, Control_Zone_Lost
+from .strings import MESSAGE_STRINGS
 
 
 beam_model = Model("sprites/laser.vmt")
-boxes = [
-    {
-        "point1": "155 -923 448",
-        "point2": "527 -1168 522",
-    },
-    {
-        "point1": "846 592 64",
-        "point2": "189 751 148",
-    },
-    {
-        "point1": "599 -112 648",
-        "point2": "431 -272 732",
-    },
-]
-ALL_PLAYERS = PlayerIter()
-color_checks = {
-    2: "r",
-    3: "b",
+TEAM_COLORS = {
+    2: RED,
+    3: BLUE,
 }
+ALL_PLAYERS = PlayerIter()
+START_CHANNEL = 6
+START_Y_OFFSET = -0.6
 
 
+# =============================================================================
+# >> ENUMS
+# =============================================================================
+class ControlZoneState(IntEnum):
+    NEUTRAL = 0
+    GAINING = 1
+    CAPTURED = 2
+    LOSING = 3
+
+
+# =============================================================================
+# >> CLASSES
+# =============================================================================
 class ControlZone:
 
-    def __init__(self, point1, point2):
-        self.count = 0
-        self.has_printed = False
-        self.point1 = Vector(*map(float, point1.split()))
-        self.point2 = Vector(*map(float, point2.split()))
-        self.color = Color(0, 0, 0, 255)
+    team_index = None
+    last_color = None
+    points = 0
 
+    def __init__(self, name, offset, **values):
+        self.name = name
+        self.state = ControlZoneState.NEUTRAL
+        self.point1 = Vector(*map(float, values["point1"].split()))
+        self.point2 = Vector(*map(float, values["point2"].split()))
+        self.y = START_Y_OFFSET - (0.05 * offset)
+        self.channel = START_CHANNEL + offset
 
-    def display_beam(self):
-        if self.count == 30:
-            print(self.color)
-            self.count = 0
+    @property
+    def enemy_team_index(self):
+        return 5 - self.team_index
+
+    @property
+    def color(self):
+        if self.state is ControlZoneState.NEUTRAL:
+            return WHITE
+
+        color = TEAM_COLORS.get(self.team_index, WHITE)
+        if self.state is ControlZoneState.CAPTURED:
+            return color
+
+        self.last_color = {
+            WHITE: color,
+            color: WHITE,
+        }.get(self.last_color, WHITE)
+        return self.last_color
+
+    def send_hudmsg(self, color):
+        HudMsg(
+            message=MESSAGE_STRINGS["zone_state"],
+            color1=color,
+            x=1.5,
+            y=self.y,
+            effect=0,
+            fade_in=0,
+            fade_out=0,
+            hold_time=0.6,
+            fx_time=0,
+            channel=self.channel,
+        ).send(
+            name=self.name,
+            state=self.state.name.title(),
+        )
+
+    def display_beam(self, color):
         box(
             recipients=ALL_PLAYERS,
             start=self.point1,
             end=self.point2,
-            start_width=40,
-            end_width=40,
-            color=WHITE if self.color == BLACK else self.color,
-            life_time=0.1,
+            start_width=20,
+            end_width=20,
+            color=color,
+            life_time=0.6,
             model=beam_model,
             halo=beam_model,
         )
 
-    def check_for_players(self):
-        self.count += 1
-        team_players = defaultdict(int)
+    def determine_change_in_control(self):
+        team_players_in_zone = defaultdict(int)
         for player in PlayerIter("alive"):
             if player.origin.is_within_box(self.point1, self.point2):
-                team_players[player.team_index] += 1
+                team_players_in_zone[player.team_index] += 1
 
-        if not team_players:
-            return
-
-        if len(team_players) == 2:
-            # TODO: write logic to allow for difference vs disable
-            return
-
-        team_index = list(team_players)[0]
-        player_count = team_players[team_index]
-        total_change = max(1, int(512 / 600 * player_count))
-        amounts = {
-            value: getattr(self.color, value)
-            for value in color_checks.values()
-        }
-        remove_color = color_checks[5 - team_index]
-        if not self.has_printed:
-            print(team_index)# 2
-            print(player_count)# 1
-            print(total_change)# 1
-            print(amounts)# r: 255, b: 255
-            print(remove_color)# r
-        if amounts[remove_color]:
-            change_amount = min(amounts[remove_color], total_change)
-            total_change -= change_amount
-            print(f"Removing {remove_color} by {change_amount}")
-            setattr(
-                self.color,
-                remove_color,
-                amounts[remove_color] - change_amount,
-            )
-            if not self.has_printed:
-                print(change_amount)
-                print(total_change)
-
-        if not total_change:
-            if not self.has_printed:
-                print(f"Stopped for 1")
-                self.has_printed = True
-            return
-
-        add_color = color_checks[team_index]
-        if amounts[add_color] >= 255:
-            if not self.has_printed:
-                print(f"Stopped for 2")
-                self.has_printed = True
-            return
-
-        print(f"Adding {add_color} by {total_change}")
-        setattr(
-            self.color,
-            add_color,
-            min(amounts[add_color] + total_change, 255),
+        max_points = int(seconds_to_control) * 2
+        same_count = (
+            len(team_players_in_zone) == 2 and
+            len(set(team_players_in_zone.values())) == 1
         )
+        if same_count or (
+            not team_players_in_zone and
+            self.state in (ControlZoneState.NEUTRAL, ControlZoneState.CAPTURED)
+        ):
+            return
 
-control_zones = []
-for point in boxes:
-    control_zones.append(ControlZone(point["point1"], point["point2"]))
+        if not team_players_in_zone:
+            if self.state is ControlZoneState.GAINING:
+                self.state = ControlZoneState.NEUTRAL
+                self.points = 0
+            if self.state is ControlZoneState.LOSING:
+                self.state = ControlZoneState.CAPTURED
+                self.points = max_points
+            return
+
+        team_index = max(
+            team_players_in_zone,
+            key=team_players_in_zone.get,
+        )
+        if self.state is ControlZoneState.NEUTRAL:
+            self.state = ControlZoneState.GAINING
+            self.team_index = team_index
+
+        points = (
+            team_players_in_zone[team_index] -
+            team_players_in_zone.get(5 - team_index, 0)
+        )
+        if team_index == self.team_index:
+            if self.state is ControlZoneState.CAPTURED:
+                return
+
+            self.points += points
+            if self.points >= max_points:
+                self.points = max_points
+                self.state = ControlZoneState.CAPTURED
+                with Control_Zone_Captured() as event:
+                    print(f'Firing event: {event.name}')
+                    event.team = self.team_index
+                    event.zone_name = self.name
+
+            return
+
+        if self.state is ControlZoneState.CAPTURED:
+            self.state = ControlZoneState.LOSING
+
+        self.points -= points
+        if self.points > 0:
+            return
+
+        self.team_index = self.enemy_team_index
+        self.points = abs(self.points)
+        previous_state = self.state
+        self.state = (
+            ControlZoneState.NEUTRAL
+            if not self.points
+            else ControlZoneState.GAINING
+        )
+        if previous_state is ControlZoneState.LOSING:
+            with Control_Zone_Lost() as event:
+                event.team = self.enemy_team_index
+                event.zone_name = self.name
 
 
-@Repeat
-def main():
-    for control_zone in control_zones:
-        control_zone.check_for_players()
-        control_zone.display_beam()
+class ControlZones(dict):
+    def __init__(self):
+        super().__init__()
+        self.repeat = Repeat(self.update_control_zones)
 
-main.start(0.1)
+    def clear(self):
+        self.repeat.stop()
+        super().clear()
+
+    def create_control_zones(self):
+        if self or global_vars.map_name is None:
+            return
+
+        coordinates = map_coordinates.get(global_vars.map_name)
+        if coordinates is None:
+            # TODO: raise/warn
+            return
+
+        for offset, (name, values) in enumerate(coordinates.items()):
+            self[name] = ControlZone(name, offset, **values)
+
+        self.repeat.start(0.5)
+
+    def update_control_zones(self):
+        if not self:
+            return
+
+        for control_zone in self.values():
+            control_zone.determine_change_in_control()
+            color = control_zone.color
+            control_zone.display_beam(color)
+            control_zone.send_hudmsg(color)
+
+
+control_zones = ControlZones()
+
+
+# =============================================================================
+# >> LOAD & UNLOAD
+# =============================================================================
+def load():
+    sv_tags.add("control_zones")
+    control_zones.create_control_zones()
+
+
+def unload():
+    sv_tags.remove("control_zones")
+
+
+# =============================================================================
+# >> LISTENERS
+# =============================================================================
+@OnLevelInit
+def _level_init(map_name):
+    control_zones.create_control_zones()
+
+
+# =============================================================================
+# >> GAME EVENTS
+# =============================================================================
+@Event("control_zone_captured")
+def _end_game(game_event):
+    print('ummm...')
+    for control_zone in control_zones.values():
+        if control_zone.state is not ControlZoneState.CAPTURED:
+            return
+    entity = Entity.find_or_create("game_end")
+    entity.end_game()
+    Delay(0, control_zones.clear)
