@@ -251,7 +251,6 @@ def _level_init(map_name):
 # =============================================================================
 @Event("control_zone_captured")
 def _end_game(game_event):
-    print('ummm...')
     for control_zone in control_zones.values():
         if control_zone.state is not ControlZoneState.CAPTURED:
             return
