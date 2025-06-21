@@ -1,6 +1,6 @@
 # ../control_zones/control_zones.py
 
-"""."""
+"""Plugin where players battle to control zones on the map to win."""
 
 # =============================================================================
 # >> IMPORTS
